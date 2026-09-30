@@ -11,3 +11,5 @@ SYS/*.tmp
 SYS/password.txt
 SYS/login-failures.json
 SYS/password-hint.txt
+# 打包下載用的壓縮檔
+SYS.zip
