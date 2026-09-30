@@ -99,6 +99,26 @@ class VcdashTest(unittest.TestCase):
             rows = list(csv.reader(fh))
         self.assertEqual(len(rows), 1 + 5)  # 標題 + 4 個新增 + 1 次修改
 
+    def test_portal_links_to_entry_files(self):
+        self.write("web/about.html", "<p>about</p>\n")
+        self.write("svc/start.bat", "@echo off\n")
+        self.write("我的 工具/x.py", "print(1)\n")
+        self.scan()
+        (self.root / "tool.py").unlink()
+        self.scan()
+        db = self.db()
+        self.assertEqual(vcdash.entry_file(db["apps"]["web"], self.cfg), "index.html")
+        self.assertEqual(vcdash.entry_file(db["apps"]["svc"], self.cfg), "start.bat")
+        self.assertIsNone(vcdash.entry_file(db["apps"]["tool.py"], self.cfg))  # 已移除
+
+        report = vcdash.generate_report(self.root, self.cfg)
+        self.assertIn(vcdash.PORTAL_FILE, report.read_text(encoding="utf-8"))
+        page = (report.parent / vcdash.PORTAL_FILE).read_text(encoding="utf-8")
+        self.assertIn("href='../web/index.html'", page)
+        self.assertIn("href='../svc/start.bat'", page)
+        self.assertIn("href='../%E6%88%91%E7%9A%84%20%E5%B7%A5%E5%85%B7/x.py'", page)
+        self.assertNotIn("../tool.py", page)
+
     def test_report_and_restore_dirs_are_not_scanned(self):
         self.scan()
         vcdash.generate_report(self.root, self.cfg)

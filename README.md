@@ -6,6 +6,7 @@
 - 記錄每次的新增、修改、移除、復原
 - 保存每個版本的檔案內容，可以隨時比對差異或還原舊版
 - 產生 HTML 儀表板報告，以及可用 Excel 開啟的 CSV 修改歷程
+- 產生「系統模組入口」頁面，點一下就能開啟各個應用程式
 
 只需要 Python 3.8 以上，不必安裝其他套件。
 
@@ -70,6 +71,17 @@
   - `<title>… v3</title>`
 - **找不到版本號**：以修訂號（r1、r2…）區分各版本。
 
+## 系統模組入口
+
+`vcdash-report/portal.html` 會把所有使用中的應用程式列成卡片，依第一層資料夾分組（位於管理目錄最上層的歸在「根目錄」），並可搜尋。儀表板上方有連結可以切換。
+
+每張卡片連到該應用程式的入口檔：
+
+- **單一檔案**：就是檔案本身。
+- **專案資料夾**：依序找最上層的 `index.html`、`index.htm`、`default.html`、`main.html`、`app.html`、`main.py`、`app.py`、`__main__.py`、`run.py`、`start.bat`、`run.bat`、`start.cmd`、`start.sh`、`run.sh`，再來是 `*.exe`、`*.lnk`、`*.url`、`*.xlsm`、`*.accdb`；都沒有時，改用最上層第一個應用程式檔。找不到入口檔的專案不會列出。
+
+連結使用相對路徑，整個資料夾搬移後仍可使用。
+
 ### 版本警告
 
 以下情況會在報告中標示 ⚠：
@@ -108,6 +120,7 @@
 | `.vcdash/db.json` | 所有版本紀錄 |
 | `.vcdash/objects/` | 各版本檔案內容（gzip 壓縮，相同內容只存一份） |
 | `vcdash-report/index.html` | 儀表板，可搜尋、篩選、排序，並列出每一版的差異 |
+| `vcdash-report/portal.html` | 系統模組入口：依第一層資料夾分組列出所有使用中的應用程式，點選卡片即開啟入口檔 |
 | `vcdash-report/history.csv` | 完整修改歷程，可用 Excel 開啟 |
 | `vcdash-restore/` | `restore` 指令還原出來的舊版檔案 |
 
