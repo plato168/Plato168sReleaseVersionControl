@@ -11,11 +11,28 @@
 
 ## 快速開始
 
-1. 把 `vcdash.py`（Windows 使用者再加上 `vcdash.bat`）複製到放應用程式的資料夾。
-2. 執行掃描：
-   - **Windows**：雙擊 `vcdash.bat`。掃描完成後會自動開啟報告。
-   - **macOS / Linux**：執行 `./vcdash.sh` 或 `python3 vcdash.py`。
+### Windows：管理上一層目錄
+
+`vcdash.bat` 會管理它**上一層目錄**底下的所有檔案（含所有子目錄）。建議把 `vcdash.py` 和 `vcdash.bat` 放進應用程式資料夾內的一個子資料夾：
+
+```
+我的應用程式\            ← 要管理的目錄；紀錄與報告都放在這裡
+├── vcdash\               ← 工具資料夾，本身不會被掃描
+│   ├── vcdash.py
+│   └── vcdash.bat
+├── 工具A.html
+└── 專案B\package.json
+```
+
+雙擊 `vcdash.bat` 就會掃描，完成後自動開啟 `我的應用程式\vcdash-report\index.html`。
+
+### macOS / Linux：管理同一層目錄
+
+1. 把 `vcdash.py` 放進應用程式資料夾。
+2. 執行 `./vcdash.sh` 或 `python3 vcdash.py`，它會管理 `vcdash.py` 所在的那一層目錄。
 3. 開啟 `vcdash-report/index.html` 查看儀表板。
+
+要管理其他資料夾時，加上 `--root 路徑` 即可。
 
 之後每次修改應用程式，再執行一次就會記錄新版本。
 

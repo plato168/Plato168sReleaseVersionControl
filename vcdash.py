@@ -226,9 +226,11 @@ def _skip_file(name: str, cfg: dict) -> bool:
 
 def walk_tree(root: Path, cfg: dict):
     projects, files = [], []
+    tool_dir = Path(__file__).resolve().parent  # vcdash 放在子目錄時，不掃描它自己的資料夾
     for dirpath, dirnames, filenames in os.walk(root):
         rel_dir = Path(dirpath).relative_to(root).as_posix()
-        dirnames[:] = sorted(d for d in dirnames if not _skip_dir(d, cfg))
+        dirnames[:] = sorted(d for d in dirnames
+                             if not _skip_dir(d, cfg) and (Path(dirpath) / d).resolve() != tool_dir)
         if rel_dir != "." and any(_match_any(f, cfg["project_markers"]) for f in filenames):
             projects.append(rel_dir)
         for name in sorted(filenames):
