@@ -3,48 +3,62 @@
 把 `SYS` 資料夾放進任何目錄，它會把 **SYS 的上一層目錄** 裡所有檔案與資料夾列成連結，並可為每一項輸入備註。
 
 ```
-[母目錄]/
+[網站目錄]/                    例如 C:\xampp\htdocs\myprojects
 ├── SYS/
-│   ├── app.js       後端（只用 Node.js 內建模組，不需 npm install）
 │   ├── index.html   前端網頁
-│   ├── start.bat    Windows 啟動（雙擊即可）
-│   ├── start.sh     macOS / Linux 啟動
+│   ├── api.php      後端（Apache + PHP 版）
+│   ├── .htaccess    Apache 設定：禁止下載資料檔與密碼檔
+│   ├── app.js       後端（Node.js 版，沒有 Apache 時使用）
+│   ├── start.bat / start.sh   Node.js 版啟動檔
+│   ├── password.txt 自行建立：登入密碼（第一行）
 │   ├── notes.json   自動產生：備註
 │   └── config.json  自動產生：記住的基礎網址
 ├── Project_A/
 └── Project_B/
 ```
 
-## 使用方式
+## 部署到 Apache 網站（建議）
 
-1. 安裝 Node.js（14 以上）。
+需要 Apache 2.4 + PHP 7.4 以上（XAMPP、WampServer、AppServ 都已內建）。
+
+1. 把整個 `SYS` 資料夾複製到網站目錄中，放在要列出的那一層底下，例如 `C:\xampp\htdocs\myprojects\SYS`。
+2. 讓 Apache 可以寫入 `SYS` 資料夾（要存備註）。Linux：`sudo chown www-data SYS`（依系統的 Apache 帳號而定）；Windows 的 XAMPP 通常不必調整。
+3. 確認該目錄允許 `.htaccess`：`httpd.conf` 中對應的 `<Directory>` 要有 `AllowOverride All`。
+4. 瀏覽器開啟 `http://你的網址/myprojects/SYS/`。基礎網址會自動帶入上一層網址（`http://你的網址/myprojects`），按「套用並產生連結」即可。
+
+不需要執行任何程式，Apache 開著就能用。
+
+## 讓網際網路使用者連線
+
+1. **設定密碼（必要）**：在 `SYS` 資料夾建立 `password.txt`，第一行寫密碼。
+   - 沒有密碼時，只允許本機與區網（192.168.x.x、10.x.x.x 等）連線，網際網路的連線會被拒絕。
+   - 有密碼後，所有人開啟網頁時瀏覽器會跳出登入視窗：**使用者名稱任意填，密碼填 password.txt 的內容**。
+   - 同一個 IP 密碼錯 10 次會封鎖 15 分鐘。
+2. **讓外部連到 Apache**：
+   - 在路由器設定「連接埠轉送 (Port Forwarding)」，把外部的 80 / 443 轉到 Apache 主機的區網 IP。
+   - 在 Windows 防火牆允許 Apache（`httpd.exe`）通過。
+   - 沒有固定 IP 時可申請 DDNS（例如 No-IP、DuckDNS）取得固定網址。
+3. **基礎網址改成外部網址**：例如 `http://你的網域/myprojects`，否則外部使用者點連結會連不到。
+4. **建議啟用 HTTPS**：密碼是用瀏覽器內建的登入方式傳送，使用 `http://` 時可能被網路上的人攔截。可用 Let's Encrypt（Windows 可用 win-acme，Linux 可用 certbot）替 Apache 申請免費憑證。
+
+注意：這個密碼只保護 SYS 入口網站（清單與備註）。上一層目錄中的專案本身是由 Apache 直接提供，任何知道網址的人都能開啟；若專案也需要保護，請另外用 Apache 的 `AuthType Basic` 設定。
+
+## 沒有 Apache 時：Node.js 版
+
+1. 安裝 Node.js 14 以上。
 2. 執行 `start.bat`（Windows）或 `./start.sh`，也可以直接 `node app.js`。
-3. 開啟 <http://localhost:3000>，在「設定基礎網址」輸入對應母目錄的網址，例如 `http://example.com/myprojects`。
-4. 按「套用並產生連結」，每個項目的連結會是 `基礎網址/名稱`（資料夾結尾加 `/`）。
-5. 在備註欄輸入文字，按 Enter 或點到別處就會自動儲存。
-
-- 基礎網址會被記住，下次打開網頁會自動產生連結。
-- 列表會隱藏 `SYS` 本身及 `.` 開頭的隱藏檔；資料夾排在前面。
-- 上方篩選框可依名稱或備註搜尋。
-
-## 區網其他電腦使用
-
-啟動後視窗會列出區網網址，例如：
-
-```
-SYS 入口網站已啟動：http://localhost:3000
-區網其他電腦請開啟：
-  http://192.168.1.20:3000
-```
-
-- 其他電腦用瀏覽器開啟列出的 `http://192.168.x.x:3000` 即可，備註是共用的。
-- Windows 第一次啟動時若跳出防火牆詢問，請勾選「私人網路」並按「允許存取」。沒跳出而連不上時，到「Windows Defender 防火牆 → 允許應用程式通過防火牆」允許 Node.js。
-- 基礎網址請填其他電腦也連得到的網址（用 IP 或主機名稱），不要填 `localhost`，否則別台電腦點連結會連到自己。
-- 同一個網路上的人都能看到清單並修改備註，請只在信任的網路上使用。
-
-## 設定
+3. 開啟 <http://localhost:3000>，啟動視窗會列出區網其他電腦可用的網址。
 
 | 環境變數 | 預設值 | 說明 |
 | --- | --- | --- |
 | `PORT` | `3000` | 連接埠 |
 | `HOST` | `0.0.0.0` | 允許區網其他電腦連線；只想本機使用請設為 `127.0.0.1` |
+| `SYS_PASSWORD` | （無） | 登入密碼；沒設時讀取 `password.txt` |
+
+## 功能
+
+- 每個連結是「基礎網址/名稱」，資料夾結尾加 `/`；中文與空白會自動編碼。
+- 備註按 Enter 或點到別處自動儲存，清空即刪除。
+- 基礎網址會被記住，下次打開網頁會自動產生連結。
+- 列表隱藏 `SYS` 本身與 `.` 開頭的隱藏檔；資料夾排在前面。
+- 上方篩選框可依名稱或備註搜尋。

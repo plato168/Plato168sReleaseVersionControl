@@ -8,3 +8,5 @@ vcdash-restore/
 SYS/notes.json
 SYS/config.json
 SYS/*.tmp
+SYS/password.txt
+SYS/login-failures.json

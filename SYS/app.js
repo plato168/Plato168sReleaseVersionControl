@@ -7,6 +7,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 
 const PORT = Number(process.env.PORT) || 3000;
 // 預設 0.0.0.0：區網其他電腦也能連線；只想本機使用時設 HOST=127.0.0.1
@@ -18,7 +19,93 @@ const SYS_NAME = path.basename(SYS_DIR);
 const INDEX_FILE = path.join(SYS_DIR, 'index.html');
 const NOTES_FILE = path.join(SYS_DIR, 'notes.json');
 const CONFIG_FILE = path.join(SYS_DIR, 'config.json');
+const PASSWORD_FILE = path.join(SYS_DIR, 'password.txt');
 const MAX_BODY = 1024 * 1024;
+
+// 密碼：優先使用環境變數 SYS_PASSWORD，否則讀取 SYS/password.txt 的第一行。
+// 有設密碼時所有人都要登入；沒設密碼時只允許本機與區網連線。
+function loadPassword() {
+    if (process.env.SYS_PASSWORD) return process.env.SYS_PASSWORD;
+    try {
+        return fs.readFileSync(PASSWORD_FILE, 'utf8').replace(/^\uFEFF/, '').split(/\r?\n/)[0].trim();
+    } catch (e) {
+        return '';
+    }
+}
+const PASSWORD = loadPassword();
+
+// 登入失敗太多次就暫時封鎖該來源，防止猜密碼
+const MAX_FAILURES = 10;
+const LOCK_MS = 15 * 60 * 1000;
+const failures = new Map();
+
+function isLoopback(ip) {
+    return ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1';
+}
+
+function isPrivate(ip) {
+    const v4 = ip.replace(/^::ffff:/, '');
+    if (/^(127\.|10\.|192\.168\.|169\.254\.)/.test(v4)) return true;
+    const m = v4.match(/^172\.(\d+)\./);
+    if (m && Number(m[1]) >= 16 && Number(m[1]) <= 31) return true;
+    return ip === '::1' || /^f[cd]/i.test(ip) || /^fe80:/i.test(ip);
+}
+
+// 取得真正的使用者 IP。只有請求來自本機（例如 Cloudflare Tunnel、ngrok 等轉發程式）
+// 時才採信轉發標頭，避免外部使用者偽造。
+function clientIp(req) {
+    const remote = req.socket.remoteAddress || '';
+    if (isLoopback(remote)) {
+        const forwarded = req.headers['cf-connecting-ip'] || String(req.headers['x-forwarded-for'] || '').split(',')[0];
+        if (forwarded && forwarded.trim()) return forwarded.trim();
+    }
+    return remote;
+}
+
+function passwordMatches(given) {
+    const a = crypto.createHash('sha256').update(given).digest();
+    const b = crypto.createHash('sha256').update(PASSWORD).digest();
+    return crypto.timingSafeEqual(a, b);
+}
+
+// 回傳 true 表示可以繼續處理請求；否則已經回應錯誤。
+function authorize(req, res) {
+    const ip = clientIp(req);
+
+    if (!PASSWORD) {
+        if (isPrivate(ip)) return true;
+        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('尚未設定密碼，只允許區網連線。請在 SYS/password.txt 設定密碼後重新啟動。');
+        return false;
+    }
+
+    const record = failures.get(ip);
+    if (record && record.lockedUntil > Date.now()) {
+        res.writeHead(429, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('密碼錯誤次數過多，請 15 分鐘後再試。');
+        return false;
+    }
+
+    const header = req.headers.authorization || '';
+    if (header.startsWith('Basic ')) {
+        const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+        const given = decoded.slice(decoded.indexOf(':') + 1);
+        if (passwordMatches(given)) {
+            failures.delete(ip);
+            return true;
+        }
+        const count = (record && record.lockedUntil <= Date.now() && record.count >= MAX_FAILURES ? 0 : (record ? record.count : 0)) + 1;
+        failures.set(ip, { count, lockedUntil: count >= MAX_FAILURES ? Date.now() + LOCK_MS : 0 });
+        if (count >= MAX_FAILURES) console.log(`[${new Date().toLocaleString()}] ${ip} 密碼錯誤 ${count} 次，封鎖 15 分鐘`);
+    }
+
+    res.writeHead(401, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        'WWW-Authenticate': 'Basic realm="SYS", charset="UTF-8"'
+    });
+    res.end('請輸入密碼（使用者名稱可任意填寫）');
+    return false;
+}
 
 function readJson(file) {
     try {
@@ -128,8 +215,12 @@ async function handleApi(req, res, pathname) {
 }
 
 const server = http.createServer(async (req, res) => {
-    const pathname = new URL(req.url, 'http://localhost').pathname;
+    const url = new URL(req.url, 'http://localhost');
+    // 前端呼叫 api.php?action=xxx（Apache 版），在 Node 版對應到 /api/xxx
+    const pathname = url.pathname === '/api.php' ? `/api/${url.searchParams.get('action') || ''}` : url.pathname;
     try {
+        if (!authorize(req, res)) return;
+
         if (pathname.startsWith('/api/')) return await handleApi(req, res, pathname);
 
         if (req.method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
@@ -163,4 +254,7 @@ server.listen(PORT, HOST, () => {
         }
     }
     console.log(`列出的目錄：${path.resolve(PARENT_DIR)}`);
+    console.log(PASSWORD
+        ? '已設定密碼：本機、區網、網際網路使用者都需要輸入密碼。'
+        : '未設定密碼：只允許本機與區網連線。要開放網際網路請在 SYS/password.txt 設定密碼。');
 });

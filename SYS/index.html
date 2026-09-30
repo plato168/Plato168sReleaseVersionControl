@@ -98,6 +98,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data)
             });
+            if (response.status === 401) throw new Error('需要密碼，請重新整理網頁並輸入密碼');
             return response.json();
         }
 
@@ -112,7 +113,7 @@
             showMessage('資料載入中...');
 
             try {
-                const result = await postJson('/api/get-links', { baseUrl });
+                const result = await postJson('api.php?action=get-links', { baseUrl });
                 if (!result.success) {
                     showMessage(`錯誤：${result.error}`, true);
                     return;
@@ -127,7 +128,7 @@
                 result.data.forEach(item => tbody.appendChild(buildRow(item)));
                 applyFilter();
             } catch (error) {
-                showMessage('無法連線至 SYS 後端伺服器，請確認已執行 node app.js', true);
+                showMessage(error.message.includes('密碼') ? error.message : '無法連線至 SYS 後端，請確認 Apache 已啟用 PHP（或已執行 node app.js）', true);
                 console.error(error);
             }
         }
@@ -186,7 +187,7 @@
 
         async function saveNote(name, note) {
             try {
-                const result = await postJson('/api/save-note', { name, note });
+                const result = await postJson('api.php?action=save-note', { name, note });
                 return result.success;
             } catch (error) {
                 console.error('儲存備註失敗:', error);
@@ -214,12 +215,14 @@
         (async () => {
             let saved = '';
             try {
-                const result = await (await fetch('/api/config')).json();
+                const result = await (await fetch('api.php?action=config')).json();
                 saved = result.baseUrl || '';
             } catch (e) {}
             if (!saved) {
                 try { saved = localStorage.getItem('sys.baseUrl') || ''; } catch (e) {}
             }
+            // 放在 Apache 網站時，SYS 的上一層網址就是預設的基礎網址
+            if (!saved && location.pathname !== '/') saved = new URL('../', location.href).href.replace(/\/$/, '');
             if (saved) {
                 baseUrlInput.value = saved;
                 loadPortal();

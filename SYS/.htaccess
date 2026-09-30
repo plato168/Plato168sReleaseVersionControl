@@ -1,0 +1,13 @@
+# SYS 入口網站的 Apache 設定（需要 AllowOverride All 或至少 FileInfo AuthConfig Limit）
+
+DirectoryIndex index.html
+
+# 禁止直接下載資料檔、密碼檔與後端原始碼
+<FilesMatch "^(notes\.json|config\.json|password\.txt|login-failures\.json|.*\.tmp|app\.js|start\.(bat|sh)|README\.md)$">
+    Require all denied
+</FilesMatch>
+
+# PHP 以 CGI / FastCGI 執行時，把登入資訊傳給 api.php
+<IfModule mod_setenvif.c>
+    SetEnvIf Authorization "(.+)" HTTP_AUTHORIZATION=$1
+</IfModule>
