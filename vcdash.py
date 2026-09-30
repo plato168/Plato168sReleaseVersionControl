@@ -7,7 +7,7 @@ vcdash — 應用程式版本控制儀表板
   * 自動找出應用程式（單一檔案的程式，或含有 package.json 等標記檔的專案資料夾）
   * 讀取各應用程式宣告的版本號
   * 每次掃描時記錄新增 / 修改 / 移除 / 復原，並保存檔案內容以便比對差異
-  * 產生 HTML 儀表板報告與 CSV 修改歷程
+  * 產生 HTML 儀表板報告、系統模組入口頁面與 CSV 修改歷程
   * 可還原任何一個歷史版本
 
 只使用 Python 標準函式庫（Python 3.8 以上）。
@@ -37,6 +37,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 TOOL_NAME = "vcdash"
 TOOL_VERSION = "1.0.0"
@@ -44,6 +45,7 @@ DATA_DIR = ".vcdash"
 DB_FILE = "db.json"
 CONFIG_FILE = "vcdash.json"
 REPORT_DIR = "vcdash-report"
+PORTAL_FILE = "portal.html"
 RESTORE_DIR = "vcdash-restore"
 SCHEMA = 1
 
@@ -76,6 +78,13 @@ DEFAULT_CONFIG = {
     "max_diff_lines": 400,              # 報告中每個檔案最多顯示的差異行數
     "max_line_chars": 300,              # 差異中每行最多顯示的字元數
 }
+
+# 專案資料夾的入口檔，依序比對；都沒有時改用最上層第一個應用程式檔
+ENTRY_CANDIDATES = [
+    "index.html", "index.htm", "default.html", "default.htm", "main.html", "app.html",
+    "main.py", "app.py", "__main__.py", "run.py", "start.bat", "run.bat", "start.cmd",
+    "start.sh", "run.sh", "*.exe", "*.lnk", "*.url", "*.xlsm", "*.accdb",
+]
 
 EVENT_LABEL = {"created": "新增", "modified": "修改", "removed": "移除", "restored": "復原"}
 EVENT_MARK = {"created": "＋", "modified": "～", "removed": "－", "restored": "↺"}
@@ -638,6 +647,11 @@ overflow-x:auto;font-size:12.5px;line-height:1.45}
 .diff .da{background:var(--add-bg);color:var(--add-fg)}.diff .dr{background:var(--del-bg);color:var(--del-fg)}
 .diff .dc{color:var(--hunk)}.diff .dh{color:var(--muted);font-weight:600}
 .diff-file{margin-top:10px;font-size:13px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:12px}
+.card{display:flex;flex-direction:column;gap:2px;background:var(--panel);border:1px solid var(--line);
+border-radius:10px;padding:12px 14px;color:var(--text);min-width:0}
+.card:hover{border-color:var(--accent);text-decoration:none}.card b{color:var(--accent);font-size:16px}
+.card span{overflow-wrap:anywhere}
 footer{margin-top:40px;color:var(--muted);font-size:13px}
 @media print{.tools{display:none}details.rev{break-inside:avoid}}
 """
@@ -669,6 +683,22 @@ JS = """
         return (x>y?1:x<y?-1:0)*(asc?1:-1);
       });
       rows.forEach(function(r){body.appendChild(r);});
+    });
+  });
+})();
+"""
+
+PORTAL_JS = """
+(function(){
+  var q=document.getElementById('mq');
+  q.addEventListener('input',function(){
+    var term=(q.value||'').toLowerCase();
+    document.querySelectorAll('[data-group]').forEach(function(g){
+      var any=false;
+      g.querySelectorAll('[data-mod]').forEach(function(el){
+        var ok=el.getAttribute('data-search').indexOf(term)>=0;el.hidden=!ok;any=any||ok;
+      });
+      g.hidden=!any;
     });
   });
 })();
@@ -764,6 +794,78 @@ def render_revision(app_id: str, rec: dict, idx: int, store: BlobStore, cfg: dic
             f"{''.join(body)}</details>")
 
 
+def entry_file(rec: dict, cfg: dict) -> str | None:
+    """回傳應用程式的入口檔（相對於應用程式本身），找不到時回傳 None。"""
+    live = last_live(rec)
+    if live is None or rec["versions"][-1]["event"] == "removed":
+        return None
+    keys = sorted(live["files"])
+    if rec["kind"] == "file":
+        return keys[0] if keys else None
+    top = [k for k in keys if "/" not in k]
+    for pattern in ENTRY_CANDIDATES:
+        hit = next((k for k in top if fnmatch.fnmatch(k.lower(), pattern)), None)
+        if hit:
+            return hit
+    return next((k for k in top if os.path.splitext(k)[1].lower() in cfg["_ext"]), None)
+
+
+def entry_href(root: Path, out_dir: Path, app_id: str, kind: str, key: str) -> str:
+    """從報告資料夾連到入口檔的網址；可相對時用相對路徑，方便整個資料夾搬移。"""
+    target = disk_path(root, app_id, kind, key)
+    try:
+        rel = os.path.relpath(target, out_dir).replace(os.sep, "/")
+    except ValueError:  # Windows 上位於不同磁碟機
+        return target.resolve().as_uri()
+    return "/".join(quote(part) for part in rel.split("/"))
+
+
+def render_portal(root: Path, cfg: dict, db: dict, out_dir: Path, generated: str) -> str:
+    groups: dict = {}
+    for app_id, rec in sorted(db["apps"].items()):
+        if not rec["versions"]:
+            continue
+        key = entry_file(rec, cfg)
+        if key is None:
+            continue
+        st = app_state(rec)
+        group = app_id.split("/", 1)[0] if "/" in app_id else "根目錄"
+        href = entry_href(root, out_dir, app_id, rec["kind"], key)
+        where = app_id if rec["kind"] == "file" else f"{app_id}/{key}"
+        search = esc(f"{group} {app_id} {key} {st['version'] or ''}".lower())
+        ext = os.path.splitext(key)[1].lower()
+        target = " target='_blank' rel='noopener'" if ext in (".html", ".htm") else ""
+        warn = f" <span class='warn small'>⚠ {len(st['last_warnings'])}</span>" if st["last_warnings"] else ""
+        groups.setdefault(group, []).append(
+            f"<a class='card' data-mod data-search='{search}' href='{esc(href)}'{target}>"
+            f"<b>{esc(rec['name'])}</b>"
+            f"<span class='mono small'>{esc('v' + st['version'] if st['version'] else '未宣告版本')}"
+            f" · r{len(rec['versions'])}{warn}</span>"
+            f"<span class='muted small mono'>{esc(where)}</span>"
+            f"<span class='muted small'>最後變更 {esc(fmt_time(st['last_change']))}</span></a>")
+
+    order = sorted(groups, key=lambda g: (g != "根目錄", g.lower()))
+    blocks = "".join(
+        f"<section class='mod-group' data-group><h2>{esc(g)} <span class='muted small'>{len(groups[g])}</span></h2>"
+        f"<div class='cards'>{''.join(groups[g])}</div></section>" for g in order)
+    total = sum(len(v) for v in groups.values())
+    empty = "<p class='muted'>尚無可開啟的模組，請先執行 python vcdash.py scan</p>" if not total else ""
+    return f"""<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>系統模組入口</title><style>{CSS}</style></head>
+<body><main>
+<h1>系統模組入口</h1>
+<div class="muted small wrap">管理目錄：<span class="mono">{esc(root)}</span><br>
+共 {total} 個模組　最後掃描：{esc(fmt_time(db.get("last_scan")))}　·　<a href="index.html">版本控制儀表板 →</a></div>
+<div class="tools" style="margin-top:16px">
+<input id="mq" type="search" placeholder="搜尋模組名稱、路徑或版本…" aria-label="搜尋模組"></div>
+{blocks}{empty}
+<footer>{TOOL_NAME} {TOOL_VERSION}　·　產生於 {esc(fmt_time(generated))}　·　點選卡片即開啟該模組的入口檔</footer>
+</main><script>{PORTAL_JS}</script></body></html>
+"""
+
+
 def generate_report(root: Path, cfg: dict, out_dir: Path | None = None) -> Path:
     db = load_db(root)
     store = BlobStore(root / DATA_DIR / "objects")
@@ -842,7 +944,7 @@ def generate_report(root: Path, cfg: dict, out_dir: Path | None = None) -> Path:
 <body><main>
 <h1>應用程式版本控制儀表板</h1>
 <div class="muted small wrap">管理目錄：<span class="mono">{esc(root)}</span><br>
-最後掃描：{esc(fmt_time(last_scan))}　報告產生：{esc(fmt_time(generated))}</div>
+最後掃描：{esc(fmt_time(last_scan))}　報告產生：{esc(fmt_time(generated))}　·　<a href="{PORTAL_FILE}">系統模組入口 →</a></div>
 
 <div class="kpis">
 <div class="kpi"><b>{active}</b><span>使用中的應用程式</span></div>
@@ -884,6 +986,7 @@ def generate_report(root: Path, cfg: dict, out_dir: Path | None = None) -> Path:
 """
     report = out_dir / "index.html"
     report.write_text(page, encoding="utf-8")
+    (out_dir / PORTAL_FILE).write_text(render_portal(root, cfg, db, out_dir, generated), encoding="utf-8")
 
     with open(out_dir / "history.csv", "w", newline="", encoding="utf-8-sig") as fh:
         writer = csv.writer(fh)
