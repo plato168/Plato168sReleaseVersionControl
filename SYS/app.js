@@ -6,9 +6,11 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const PORT = Number(process.env.PORT) || 3000;
-const HOST = process.env.HOST || '127.0.0.1';
+// 預設 0.0.0.0：區網其他電腦也能連線；只想本機使用時設 HOST=127.0.0.1
+const HOST = process.env.HOST || '0.0.0.0';
 
 const SYS_DIR = __dirname;
 const PARENT_DIR = path.join(SYS_DIR, '..');
@@ -142,8 +144,23 @@ const server = http.createServer(async (req, res) => {
     }
 });
 
+// 列出本機在區網中的 IPv4 位址，方便告訴其他電腦要連哪個網址
+function lanAddresses() {
+    return Object.values(os.networkInterfaces())
+        .flat()
+        .filter(info => info && info.family === 'IPv4' && !info.internal)
+        .map(info => info.address);
+}
+
 server.listen(PORT, HOST, () => {
     const shownHost = HOST === '0.0.0.0' ? 'localhost' : HOST;
     console.log(`SYS 入口網站已啟動：http://${shownHost}:${PORT}`);
+    if (HOST === '0.0.0.0') {
+        const addresses = lanAddresses();
+        if (addresses.length) {
+            console.log('區網其他電腦請開啟：');
+            addresses.forEach(ip => console.log(`  http://${ip}:${PORT}`));
+        }
+    }
     console.log(`列出的目錄：${path.resolve(PARENT_DIR)}`);
 });
