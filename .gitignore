@@ -10,3 +10,4 @@ SYS/config.json
 SYS/*.tmp
 SYS/password.txt
 SYS/login-failures.json
+SYS/password-hint.txt

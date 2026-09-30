@@ -6,6 +6,7 @@ declare(strict_types=1);
 
 const MAX_FAILURES = 10;
 const LOCK_SECONDS = 15 * 60;
+const TOKEN_SECONDS = 7 * 24 * 60 * 60;   // 登入後 7 天內不用再輸入密碼
 
 $sysDir = __DIR__;
 $parentDir = dirname($sysDir);
@@ -13,6 +14,7 @@ $sysName = basename($sysDir);
 $notesFile = $sysDir . '/notes.json';
 $configFile = $sysDir . '/config.json';
 $passwordFile = $sysDir . '/password.txt';
+$hintFile = $sysDir . '/password-hint.txt';
 $failuresFile = $sysDir . '/login-failures.json';
 
 header('Content-Type: application/json; charset=utf-8');
@@ -55,48 +57,60 @@ function is_private_ip(string $ip): bool
     return filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) === false;
 }
 
-function given_password(): ?string
+function load_hint(string $file): string
 {
-    if (isset($_SERVER['PHP_AUTH_PW'])) return (string) $_SERVER['PHP_AUTH_PW'];
-    $header = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
-    if (stripos($header, 'Basic ') !== 0) return null;
-    $decoded = (string) base64_decode(substr($header, 6));
-    $pos = strpos($decoded, ':');
-    return $pos === false ? null : substr($decoded, $pos + 1);
+    if (!is_file($file)) return '';
+    return trim(preg_replace('/^\xEF\xBB\xBF/', '', (string) file_get_contents($file)));
 }
 
-function authorize(string $passwordFile, string $failuresFile): void
+// 登入憑證：「到期時間.簽章」，以密碼當金鑰簽章。改密碼後舊的憑證全部失效。
+function make_token(string $password): string
 {
-    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
-    $password = load_password($passwordFile);
+    $expires = (string) (time() + TOKEN_SECONDS);
+    return $expires . '.' . hash_hmac('sha256', $expires, $password);
+}
 
+function token_valid(string $token, string $password): bool
+{
+    $parts = explode('.', $token, 2);
+    if (count($parts) !== 2 || !ctype_digit($parts[0]) || (int) $parts[0] < time()) return false;
+    return hash_equals(hash_hmac('sha256', $parts[0], $password), $parts[1]);
+}
+
+// 沒設密碼時只允許本機與區網；有設密碼時需帶有效的登入憑證。
+function authorize(string $password): void
+{
     if ($password === '') {
-        if (is_private_ip($ip)) return;
+        if (is_private_ip($_SERVER['REMOTE_ADDR'] ?? '')) return;
         send_json(403, ['success' => false, 'error' => '尚未設定密碼，只允許區網連線。請在 SYS/password.txt 設定密碼。']);
     }
+    if (token_valid((string) ($_SERVER['HTTP_X_SYS_TOKEN'] ?? ''), $password)) return;
+    send_json(401, ['success' => false, 'error' => '請先登入']);
+}
 
+function login(string $password, string $failuresFile, array $body): void
+{
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '';
     $failures = read_json($failuresFile);
     $record = $failures[$ip] ?? ['count' => 0, 'lockedUntil' => 0];
     if ($record['lockedUntil'] > time()) {
         send_json(429, ['success' => false, 'error' => '密碼錯誤次數過多，請 15 分鐘後再試。']);
     }
 
-    $given = given_password();
-    if ($given !== null) {
-        if (hash_equals(hash('sha256', $password), hash('sha256', $given))) {
-            if (isset($failures[$ip])) {
-                unset($failures[$ip]);
-                write_json($failuresFile, $failures);
-            }
-            return;
+    $given = is_string($body['password'] ?? null) ? $body['password'] : '';
+    if ($password !== '' && hash_equals(hash('sha256', $password), hash('sha256', $given))) {
+        if (isset($failures[$ip])) {
+            unset($failures[$ip]);
+            write_json($failuresFile, $failures);
         }
-        $count = ($record['lockedUntil'] > 0 ? 0 : $record['count']) + 1;
-        $failures[$ip] = ['count' => $count, 'lockedUntil' => $count >= MAX_FAILURES ? time() + LOCK_SECONDS : 0];
-        write_json($failuresFile, $failures);
+        send_json(200, ['success' => true, 'token' => make_token($password)]);
     }
 
-    header('WWW-Authenticate: Basic realm="SYS", charset="UTF-8"');
-    send_json(401, ['success' => false, 'error' => '請輸入密碼（使用者名稱可任意填寫）']);
+    $count = ($record['lockedUntil'] > 0 ? 0 : $record['count']) + 1;
+    $failures[$ip] = ['count' => $count, 'lockedUntil' => $count >= MAX_FAILURES ? time() + LOCK_SECONDS : 0];
+    write_json($failuresFile, $failures);
+    $left = MAX_FAILURES - $count;
+    send_json(401, ['success' => false, 'error' => $left > 0 ? "密碼錯誤，還可以再試 {$left} 次" : '密碼錯誤次數過多，請 15 分鐘後再試。']);
 }
 
 function list_entries(string $parentDir, string $sysName, string $baseUrl, array $notes): array
@@ -119,10 +133,27 @@ function list_entries(string $parentDir, string $sysName, string $baseUrl, array
     return $items;
 }
 
-authorize($passwordFile, $failuresFile);
-
+$password = load_password($passwordFile);
 $action = $_GET['action'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+
+// 不需登入：告訴前端是否要顯示登入框，以及密碼提示
+if ($method === 'GET' && $action === 'auth-status') {
+    $blocked = $password === '' && !is_private_ip($_SERVER['REMOTE_ADDR'] ?? '');
+    send_json(200, [
+        'success' => true,
+        'required' => $password !== '',
+        'hint' => $password !== '' ? load_hint($hintFile) : '',
+        'error' => $blocked ? '尚未設定密碼，只允許區網連線。請在 SYS/password.txt 設定密碼。' : '',
+    ]);
+}
+
+if ($method === 'POST' && $action === 'login') {
+    $body = json_decode((string) file_get_contents('php://input'), true);
+    login($password, $failuresFile, is_array($body) ? $body : []);
+}
+
+authorize($password);
 
 if ($method === 'GET' && $action === 'config') {
     $config = read_json($configFile);

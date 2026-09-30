@@ -37,6 +37,19 @@
         .msg { text-align: center; color: #718096; }
         .error { color: #c53030; }
 
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #ecf0f1; margin-bottom: 20px; }
+        .header h1 { border-bottom: none; margin: 0.67em 0; }
+        .logout { background: none; color: #718096; border: 1px solid #cbd5e0; font-size: 14px; padding: 6px 14px; }
+        .logout:hover { background: #edf2f7; }
+        .login-box { max-width: 380px; margin: 60px auto; background: white; padding: 28px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+        .login-box h2 { margin-top: 0; color: #2c3e50; font-size: 20px; }
+        .login-box label { display: block; font-weight: bold; margin-bottom: 6px; }
+        .login-box input { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
+        .login-box button { width: 100%; margin-top: 14px; }
+        .pw-hint { margin-top: 12px; padding: 10px 12px; background: #fffbea; border-left: 4px solid #ecc94b; color: #744210; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+        .login-error { margin-top: 10px; color: #c53030; font-size: 14px; min-height: 1em; }
+        [hidden] { display: none !important; }
+
         @media (max-width: 640px) {
             body { margin: 16px; }
             th:first-child, td:first-child { width: auto !important; }
@@ -45,8 +58,23 @@
 </head>
 <body>
 
-    <h1>📂 SYS 核心入口網站</h1>
+    <div class="header">
+        <h1>📂 SYS 核心入口網站</h1>
+        <button class="logout" id="logoutBtn" hidden>登出</button>
+    </div>
 
+    <div class="login-box" id="loginBox" hidden>
+        <h2>🔒 請輸入密碼</h2>
+        <form id="loginForm">
+            <label for="password">密碼</label>
+            <input type="password" id="password" autocomplete="current-password" required>
+            <div class="pw-hint" id="pwHint" hidden></div>
+            <button type="submit" id="loginBtn">登入</button>
+            <div class="login-error" id="loginError"></div>
+        </form>
+    </div>
+
+    <div id="mainSection" hidden>
     <div class="config-section">
         <div class="input-group">
             <label for="baseUrl">設定基礎網址：</label>
@@ -72,6 +100,7 @@
             <tr><td colspan="2" class="msg">請在上方輸入網址並點擊產生連結。</td></tr>
         </tbody>
     </table>
+    </div>
 
     <script>
         const baseUrlInput = document.getElementById('baseUrl');
@@ -92,14 +121,52 @@
             countEl.textContent = '';
         }
 
-        async function postJson(url, data) {
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            if (response.status === 401) throw new Error('需要密碼，請重新整理網頁並輸入密碼');
+        const loginBox = document.getElementById('loginBox');
+        const mainSection = document.getElementById('mainSection');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const loginError = document.getElementById('loginError');
+        let authRequired = false;
+
+        function getToken() {
+            try { return localStorage.getItem('sys.token') || ''; } catch (e) { return ''; }
+        }
+        function setToken(token) {
+            try {
+                if (token) localStorage.setItem('sys.token', token);
+                else localStorage.removeItem('sys.token');
+            } catch (e) {}
+        }
+
+        class AuthError extends Error {}
+
+        async function api(action, data) {
+            const options = { headers: { 'X-SYS-Token': getToken() } };
+            if (data !== undefined) {
+                options.method = 'POST';
+                options.headers['Content-Type'] = 'application/json';
+                options.body = JSON.stringify(data);
+            }
+            const response = await fetch(`api.php?action=${action}`, options);
+            if (response.status === 401 && action !== 'login') {
+                setToken('');
+                showLogin('登入已過期，請重新輸入密碼');
+                throw new AuthError('請先登入');
+            }
             return response.json();
+        }
+
+        function showLogin(message) {
+            mainSection.hidden = true;
+            logoutBtn.hidden = true;
+            loginBox.hidden = false;
+            loginError.textContent = message || '';
+            document.getElementById('password').focus();
+        }
+
+        function showMain() {
+            loginBox.hidden = true;
+            mainSection.hidden = false;
+            logoutBtn.hidden = !authRequired;
         }
 
         async function loadPortal() {
@@ -113,7 +180,7 @@
             showMessage('資料載入中...');
 
             try {
-                const result = await postJson('api.php?action=get-links', { baseUrl });
+                const result = await api('get-links', { baseUrl });
                 if (!result.success) {
                     showMessage(`錯誤：${result.error}`, true);
                     return;
@@ -128,7 +195,8 @@
                 result.data.forEach(item => tbody.appendChild(buildRow(item)));
                 applyFilter();
             } catch (error) {
-                showMessage(error.message.includes('密碼') ? error.message : '無法連線至 SYS 後端，請確認 Apache 已啟用 PHP（或已執行 node app.js）', true);
+                if (error instanceof AuthError) return;
+                showMessage('無法連線至 SYS 後端，請確認 Apache 已啟用 PHP（或已執行 node app.js）', true);
                 console.error(error);
             }
         }
@@ -187,7 +255,7 @@
 
         async function saveNote(name, note) {
             try {
-                const result = await postJson('api.php?action=save-note', { name, note });
+                const result = await api('save-note', { name, note });
                 return result.success;
             } catch (error) {
                 console.error('儲存備註失敗:', error);
@@ -211,13 +279,45 @@
         baseUrlInput.onkeydown = (e) => { if (e.key === 'Enter') loadPortal(); };
         filterInput.oninput = applyFilter;
 
+        document.getElementById('loginForm').onsubmit = async (e) => {
+            e.preventDefault();
+            const input = document.getElementById('password');
+            const btn = document.getElementById('loginBtn');
+            btn.disabled = true;
+            loginError.textContent = '';
+            try {
+                const result = await api('login', { password: input.value });
+                if (result.success) {
+                    setToken(result.token);
+                    input.value = '';
+                    showMain();
+                    loadSaved();
+                } else {
+                    loginError.textContent = result.error;
+                    input.select();
+                }
+            } catch (err) {
+                loginError.textContent = '無法連線至 SYS 後端';
+            } finally {
+                btn.disabled = false;
+            }
+        };
+
+        logoutBtn.onclick = () => {
+            setToken('');
+            tbody.innerHTML = '';
+            showLogin();
+        };
+
         // 開啟網頁時帶入上次使用的基礎網址並自動產生連結
-        (async () => {
+        async function loadSaved() {
             let saved = '';
             try {
-                const result = await (await fetch('api.php?action=config')).json();
+                const result = await api('config');
                 saved = result.baseUrl || '';
-            } catch (e) {}
+            } catch (e) {
+                if (e instanceof AuthError) return;
+            }
             if (!saved) {
                 try { saved = localStorage.getItem('sys.baseUrl') || ''; } catch (e) {}
             }
@@ -227,6 +327,34 @@
                 baseUrlInput.value = saved;
                 loadPortal();
             }
+        }
+
+        // 先確認是否需要登入，需要時顯示登入框與密碼提示
+        (async () => {
+            try {
+                const status = await (await fetch('api.php?action=auth-status')).json();
+                authRequired = status.required;
+                const hint = document.getElementById('pwHint');
+                if (status.hint) {
+                    hint.textContent = `💡 密碼提示：${status.hint}`;
+                    hint.hidden = false;
+                }
+                if (status.error) {
+                    showMain();
+                    showMessage(status.error, true);
+                    return;
+                }
+                if (authRequired && !getToken()) {
+                    showLogin();
+                    return;
+                }
+            } catch (e) {
+                showMain();
+                showMessage('無法連線至 SYS 後端，請確認 Apache 已啟用 PHP（或已執行 node app.js）', true);
+                return;
+            }
+            showMain();
+            loadSaved();
         })();
     </script>
 </body>

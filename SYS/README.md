@@ -10,7 +10,8 @@
 │   ├── .htaccess    Apache 設定：禁止下載資料檔與密碼檔
 │   ├── app.js       後端（Node.js 版，沒有 Apache 時使用）
 │   ├── start.bat / start.sh   Node.js 版啟動檔
-│   ├── password.txt 自行建立：登入密碼（第一行）
+│   ├── password.txt       自行建立：登入密碼（第一行）
+│   ├── password-hint.txt  自行建立：登入畫面顯示的密碼提示（可省略）
 │   ├── notes.json   自動產生：備註
 │   └── config.json  自動產生：記住的基礎網址
 ├── Project_A/
@@ -32,16 +33,20 @@
 
 1. **設定密碼（必要）**：在 `SYS` 資料夾建立 `password.txt`，第一行寫密碼。
    - 沒有密碼時，只允許本機與區網（192.168.x.x、10.x.x.x 等）連線，網際網路的連線會被拒絕。
-   - 有密碼後，所有人開啟網頁時瀏覽器會跳出登入視窗：**使用者名稱任意填，密碼填 password.txt 的內容**。
+   - 有密碼後，開啟網頁會先出現登入框，輸入密碼才看得到清單與備註。登入後 7 天內同一台電腦不用再輸入，可按右上角「登出」。
+   - 要顯示密碼提示，另外建立 `password-hint.txt`，內容就是提示文字（例如「公司分機後三碼」）。**提示會給所有人看到，請勿直接寫出密碼。**
    - 同一個 IP 密碼錯 10 次會封鎖 15 分鐘。
+   - 修改 `password.txt` 後，所有人都要重新登入（Node.js 版需重新啟動）。
 2. **讓外部連到 Apache**：
    - 在路由器設定「連接埠轉送 (Port Forwarding)」，把外部的 80 / 443 轉到 Apache 主機的區網 IP。
    - 在 Windows 防火牆允許 Apache（`httpd.exe`）通過。
    - 沒有固定 IP 時可申請 DDNS（例如 No-IP、DuckDNS）取得固定網址。
 3. **基礎網址改成外部網址**：例如 `http://你的網域/myprojects`，否則外部使用者點連結會連不到。
-4. **建議啟用 HTTPS**：密碼是用瀏覽器內建的登入方式傳送，使用 `http://` 時可能被網路上的人攔截。可用 Let's Encrypt（Windows 可用 win-acme，Linux 可用 certbot）替 Apache 申請免費憑證。
+4. **建議啟用 HTTPS**：使用 `http://` 時，密碼在網路上是明文傳送，可能被攔截。可用 Let's Encrypt（Windows 可用 win-acme，Linux 可用 certbot）替 Apache 申請免費憑證。
 
 注意：這個密碼只保護 SYS 入口網站（清單與備註）。上一層目錄中的專案本身是由 Apache 直接提供，任何知道網址的人都能開啟；若專案也需要保護，請另外用 Apache 的 `AuthType Basic` 設定。
+
+`password.txt`、`password-hint.txt`、`notes.json` 等檔案已由 `.htaccess` 禁止直接下載。
 
 ## 沒有 Apache 時：Node.js 版
 

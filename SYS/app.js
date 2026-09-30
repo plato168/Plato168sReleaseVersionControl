@@ -20,6 +20,7 @@ const INDEX_FILE = path.join(SYS_DIR, 'index.html');
 const NOTES_FILE = path.join(SYS_DIR, 'notes.json');
 const CONFIG_FILE = path.join(SYS_DIR, 'config.json');
 const PASSWORD_FILE = path.join(SYS_DIR, 'password.txt');
+const HINT_FILE = path.join(SYS_DIR, 'password-hint.txt');
 const MAX_BODY = 1024 * 1024;
 
 // 密碼：優先使用環境變數 SYS_PASSWORD，否則讀取 SYS/password.txt 的第一行。
@@ -37,6 +38,7 @@ const PASSWORD = loadPassword();
 // 登入失敗太多次就暫時封鎖該來源，防止猜密碼
 const MAX_FAILURES = 10;
 const LOCK_MS = 15 * 60 * 1000;
+const TOKEN_SECONDS = 7 * 24 * 60 * 60;   // 登入後 7 天內不用再輸入密碼
 const failures = new Map();
 
 function isLoopback(ip) {
@@ -62,49 +64,69 @@ function clientIp(req) {
     return remote;
 }
 
+function loadHint() {
+    try {
+        return fs.readFileSync(HINT_FILE, 'utf8').replace(/^\uFEFF/, '').trim();
+    } catch (e) {
+        return '';
+    }
+}
+
 function passwordMatches(given) {
     const a = crypto.createHash('sha256').update(given).digest();
     const b = crypto.createHash('sha256').update(PASSWORD).digest();
     return crypto.timingSafeEqual(a, b);
 }
 
-// 回傳 true 表示可以繼續處理請求；否則已經回應錯誤。
+// 登入憑證：「到期時間.簽章」，以密碼當金鑰簽章。改密碼後舊的憑證全部失效。
+function sign(expires) {
+    return crypto.createHmac('sha256', PASSWORD).update(expires).digest('hex');
+}
+
+function makeToken() {
+    const expires = String(Math.floor(Date.now() / 1000) + TOKEN_SECONDS);
+    return `${expires}.${sign(expires)}`;
+}
+
+function tokenValid(token) {
+    const [expires, signature] = String(token || '').split('.');
+    if (!/^\d+$/.test(expires || '') || Number(expires) < Date.now() / 1000 || !signature) return false;
+    const expected = Buffer.from(sign(expires));
+    const given = Buffer.from(signature);
+    return given.length === expected.length && crypto.timingSafeEqual(given, expected);
+}
+
+function blockedWithoutPassword(req) {
+    return !PASSWORD && !isPrivate(clientIp(req));
+}
+
+// 沒設密碼時只允許本機與區網；有設密碼時需帶有效的登入憑證。
 function authorize(req, res) {
-    const ip = clientIp(req);
-
-    if (!PASSWORD) {
-        if (isPrivate(ip)) return true;
-        res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('尚未設定密碼，只允許區網連線。請在 SYS/password.txt 設定密碼後重新啟動。');
+    if (blockedWithoutPassword(req)) {
+        sendJson(res, 403, { success: false, error: '尚未設定密碼，只允許區網連線。請在 SYS/password.txt 設定密碼。' });
         return false;
     }
-
-    const record = failures.get(ip);
-    if (record && record.lockedUntil > Date.now()) {
-        res.writeHead(429, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('密碼錯誤次數過多，請 15 分鐘後再試。');
-        return false;
-    }
-
-    const header = req.headers.authorization || '';
-    if (header.startsWith('Basic ')) {
-        const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
-        const given = decoded.slice(decoded.indexOf(':') + 1);
-        if (passwordMatches(given)) {
-            failures.delete(ip);
-            return true;
-        }
-        const count = (record && record.lockedUntil <= Date.now() && record.count >= MAX_FAILURES ? 0 : (record ? record.count : 0)) + 1;
-        failures.set(ip, { count, lockedUntil: count >= MAX_FAILURES ? Date.now() + LOCK_MS : 0 });
-        if (count >= MAX_FAILURES) console.log(`[${new Date().toLocaleString()}] ${ip} 密碼錯誤 ${count} 次，封鎖 15 分鐘`);
-    }
-
-    res.writeHead(401, {
-        'Content-Type': 'text/plain; charset=utf-8',
-        'WWW-Authenticate': 'Basic realm="SYS", charset="UTF-8"'
-    });
-    res.end('請輸入密碼（使用者名稱可任意填寫）');
+    if (!PASSWORD || tokenValid(req.headers['x-sys-token'])) return true;
+    sendJson(res, 401, { success: false, error: '請先登入' });
     return false;
+}
+
+function login(req, res, body) {
+    const ip = clientIp(req);
+    const record = failures.get(ip) || { count: 0, lockedUntil: 0 };
+    if (record.lockedUntil > Date.now()) {
+        return sendJson(res, 429, { success: false, error: '密碼錯誤次數過多，請 15 分鐘後再試。' });
+    }
+    const given = typeof body.password === 'string' ? body.password : '';
+    if (PASSWORD && passwordMatches(given)) {
+        failures.delete(ip);
+        return sendJson(res, 200, { success: true, token: makeToken() });
+    }
+    const count = (record.lockedUntil ? 0 : record.count) + 1;
+    failures.set(ip, { count, lockedUntil: count >= MAX_FAILURES ? Date.now() + LOCK_MS : 0 });
+    if (count >= MAX_FAILURES) console.log(`[${new Date().toLocaleString()}] ${ip} 密碼錯誤 ${count} 次，封鎖 15 分鐘`);
+    const left = MAX_FAILURES - count;
+    return sendJson(res, 401, { success: false, error: left > 0 ? `密碼錯誤，還可以再試 ${left} 次` : '密碼錯誤次數過多，請 15 分鐘後再試。' });
 }
 
 function readJson(file) {
@@ -176,6 +198,18 @@ function listEntries(baseUrl) {
 }
 
 async function handleApi(req, res, pathname) {
+    // 不需登入：告訴前端是否要顯示登入框，以及密碼提示
+    if (req.method === 'GET' && pathname === '/api/auth-status') {
+        return sendJson(res, 200, {
+            success: true,
+            required: Boolean(PASSWORD),
+            hint: PASSWORD ? loadHint() : '',
+            error: blockedWithoutPassword(req) ? '尚未設定密碼，只允許區網連線。請在 SYS/password.txt 設定密碼。' : ''
+        });
+    }
+    if (req.method === 'POST' && pathname === '/api/login') return login(req, res, await readBody(req));
+    if (!authorize(req, res)) return;
+
     if (req.method === 'GET' && pathname === '/api/config') {
         const config = readJson(CONFIG_FILE);
         return sendJson(res, 200, { success: true, baseUrl: typeof config.baseUrl === 'string' ? config.baseUrl : '' });
@@ -219,7 +253,6 @@ const server = http.createServer(async (req, res) => {
     // 前端呼叫 api.php?action=xxx（Apache 版），在 Node 版對應到 /api/xxx
     const pathname = url.pathname === '/api.php' ? `/api/${url.searchParams.get('action') || ''}` : url.pathname;
     try {
-        if (!authorize(req, res)) return;
 
         if (pathname.startsWith('/api/')) return await handleApi(req, res, pathname);
 
