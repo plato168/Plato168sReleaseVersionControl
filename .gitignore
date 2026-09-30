@@ -4,3 +4,7 @@ __pycache__/
 .vcdash/
 vcdash-report/
 vcdash-restore/
+# SYS 入口網站執行時產生的資料
+SYS/notes.json
+SYS/config.json
+SYS/*.tmp

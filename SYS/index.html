@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SYS 核心入口網站</title>
+    <style>
+        body { font-family: 'Segoe UI', 'Microsoft JhengHei', Arial, sans-serif; margin: 40px; background-color: #f8f9fa; color: #333; }
+        h1 { color: #2c3e50; border-bottom: 2px solid #ecf0f1; padding-bottom: 10px; }
+        .config-section { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        .input-group { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .input-group label { font-weight: bold; }
+        input[type="text"] { flex: 1; min-width: 200px; padding: 10px; border: 1px solid #ccc; border-radius: 4px; font-size: 16px; }
+        button { padding: 10px 20px; background-color: #3498db; color: white; border: none; border-radius: 4px; font-size: 16px; cursor: pointer; transition: 0.2s; }
+        button:hover { background-color: #2980b9; }
+        .hint { margin-top: 10px; font-size: 13px; color: #718096; word-break: break-all; }
+
+        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px; }
+        #filter { max-width: 320px; font-size: 14px; padding: 8px; }
+        #count { color: #718096; font-size: 14px; }
+
+        table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #edf2f7; }
+        th { background-color: #f7fafc; color: #4a5568; font-weight: 600; }
+
+        .link-item { text-decoration: none; font-weight: 500; display: inline-flex; align-items: center; gap: 8px; word-break: break-all; }
+        .dir { color: #2b6cb0; }
+        .file { color: #2f855a; }
+        .link-item:hover { text-decoration: underline; }
+
+        .note-cell { display: flex; align-items: center; gap: 8px; }
+        .note-input { flex: 1; padding: 6px 10px; border: 1px solid #e2e8f0; border-radius: 4px; font-size: 14px; }
+        .note-input:focus { border-color: #3182ce; outline: none; }
+        .status { font-size: 12px; min-width: 56px; }
+        .status.ok { color: #2f855a; }
+        .status.err { color: #c53030; }
+        .msg { text-align: center; color: #718096; }
+        .error { color: #c53030; }
+
+        @media (max-width: 640px) {
+            body { margin: 16px; }
+            th:first-child, td:first-child { width: auto !important; }
+        }
+    </style>
+</head>
+<body>
+
+    <h1>📂 SYS 核心入口網站</h1>
+
+    <div class="config-section">
+        <div class="input-group">
+            <label for="baseUrl">設定基礎網址：</label>
+            <input type="text" id="baseUrl" placeholder="例如: http://example.com/myprojects">
+            <button id="applyBtn">套用並產生連結</button>
+        </div>
+        <div class="hint" id="hint">基礎網址對應 SYS 的上一層目錄，每個檔案 / 資料夾名稱會接在網址後面成為連結。網址會自動記住。</div>
+    </div>
+
+    <div class="toolbar">
+        <input type="text" id="filter" placeholder="🔍 篩選名稱或備註...">
+        <span id="count"></span>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th style="width: 40%;">檔案 / 資料夾名稱 (網頁連結)</th>
+                <th style="width: 60%;">備註說明 (輸入後自動儲存)</th>
+            </tr>
+        </thead>
+        <tbody id="portalBody">
+            <tr><td colspan="2" class="msg">請在上方輸入網址並點擊產生連結。</td></tr>
+        </tbody>
+    </table>
+
+    <script>
+        const baseUrlInput = document.getElementById('baseUrl');
+        const tbody = document.getElementById('portalBody');
+        const filterInput = document.getElementById('filter');
+        const countEl = document.getElementById('count');
+        const hintEl = document.getElementById('hint');
+
+        function showMessage(text, isError) {
+            tbody.innerHTML = '';
+            const tr = document.createElement('tr');
+            const td = document.createElement('td');
+            td.colSpan = 2;
+            td.className = isError ? 'msg error' : 'msg';
+            td.textContent = text;
+            tr.appendChild(td);
+            tbody.appendChild(tr);
+            countEl.textContent = '';
+        }
+
+        async function postJson(url, data) {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            return response.json();
+        }
+
+        async function loadPortal() {
+            const baseUrl = baseUrlInput.value.trim();
+            if (!baseUrl) {
+                alert('請先輸入基礎網址！');
+                return;
+            }
+            try { localStorage.setItem('sys.baseUrl', baseUrl); } catch (e) {}
+
+            showMessage('資料載入中...');
+
+            try {
+                const result = await postJson('/api/get-links', { baseUrl });
+                if (!result.success) {
+                    showMessage(`錯誤：${result.error}`, true);
+                    return;
+                }
+                if (result.parentDir) hintEl.textContent = `目前列出的目錄：${result.parentDir}`;
+                if (result.data.length === 0) {
+                    showMessage('該目錄下沒有任何檔案或資料夾。');
+                    return;
+                }
+
+                tbody.innerHTML = '';
+                result.data.forEach(item => tbody.appendChild(buildRow(item)));
+                applyFilter();
+            } catch (error) {
+                showMessage('無法連線至 SYS 後端伺服器，請確認已執行 node app.js', true);
+                console.error(error);
+            }
+        }
+
+        function buildRow(item) {
+            const tr = document.createElement('tr');
+
+            const tdLink = document.createElement('td');
+            const a = document.createElement('a');
+            a.href = item.url;
+            a.target = '_blank';
+            a.rel = 'noopener';
+            a.className = `link-item ${item.isDirectory ? 'dir' : 'file'}`;
+            a.textContent = `${item.isDirectory ? '📁' : '📄'} ${item.name}`;
+            tdLink.appendChild(a);
+
+            const tdNote = document.createElement('td');
+            const cell = document.createElement('div');
+            cell.className = 'note-cell';
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'note-input';
+            input.value = item.note;
+            input.placeholder = '點擊輸入此項目的備註...';
+            const status = document.createElement('span');
+            status.className = 'status';
+
+            let savedValue = item.note;
+            input.onblur = async () => {
+                if (input.value === savedValue) return;
+                const value = input.value;
+                status.className = 'status';
+                status.textContent = '儲存中...';
+                if (await saveNote(item.name, value)) {
+                    savedValue = value;
+                    item.note = value;
+                    status.className = 'status ok';
+                    status.textContent = '✔ 已儲存';
+                    setTimeout(() => { if (status.textContent === '✔ 已儲存') status.textContent = ''; }, 2000);
+                } else {
+                    status.className = 'status err';
+                    status.textContent = '✘ 儲存失敗';
+                }
+            };
+            input.onkeydown = (e) => { if (e.key === 'Enter') input.blur(); };
+
+            cell.appendChild(input);
+            cell.appendChild(status);
+            tdNote.appendChild(cell);
+            tr.appendChild(tdLink);
+            tr.appendChild(tdNote);
+            tr.dataset.search = item.name.toLowerCase();
+            tr.getNote = () => input.value.toLowerCase();
+            return tr;
+        }
+
+        async function saveNote(name, note) {
+            try {
+                const result = await postJson('/api/save-note', { name, note });
+                return result.success;
+            } catch (error) {
+                console.error('儲存備註失敗:', error);
+                return false;
+            }
+        }
+
+        function applyFilter() {
+            const keyword = filterInput.value.trim().toLowerCase();
+            const rows = Array.from(tbody.querySelectorAll('tr')).filter(tr => tr.getNote);
+            let shown = 0;
+            rows.forEach(tr => {
+                const match = !keyword || tr.dataset.search.includes(keyword) || tr.getNote().includes(keyword);
+                tr.style.display = match ? '' : 'none';
+                if (match) shown++;
+            });
+            countEl.textContent = rows.length ? `共 ${rows.length} 項${keyword ? `，符合 ${shown} 項` : ''}` : '';
+        }
+
+        document.getElementById('applyBtn').onclick = loadPortal;
+        baseUrlInput.onkeydown = (e) => { if (e.key === 'Enter') loadPortal(); };
+        filterInput.oninput = applyFilter;
+
+        // 開啟網頁時帶入上次使用的基礎網址並自動產生連結
+        (async () => {
+            let saved = '';
+            try {
+                const result = await (await fetch('/api/config')).json();
+                saved = result.baseUrl || '';
+            } catch (e) {}
+            if (!saved) {
+                try { saved = localStorage.getItem('sys.baseUrl') || ''; } catch (e) {}
+            }
+            if (saved) {
+                baseUrlInput.value = saved;
+                loadPortal();
+            }
+        })();
+    </script>
+</body>
+</html>
