@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+# 在本儲存庫內試跑時產生的紀錄與報告
+.vcdash/
+vcdash-report/
+vcdash-restore/
